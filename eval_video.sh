@@ -13,7 +13,7 @@
 export CUDA_VISIBLE_DEVICES=1,2
 
 torchrun --nproc_per_node=2 --standalone eval_dynamic_degree_json.py \
-  --batch_size 64 \
+  --batch_size 4 \
   --video_json updated_data_obj_grounding_videos.json \
   --video_base_dir /scratch3/yan204/yxp/Senorita \
   --output_path /scratch3/yan204/yxp/vbench/swap_1w_results

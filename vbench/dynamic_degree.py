@@ -13,9 +13,6 @@ from vbench.utils import load_dimension_info
 
 from vbench.third_party.RAFT.core.raft import RAFT
 from vbench.third_party.RAFT.core.utils_core.utils import InputPadder
-import decord
-decord.bridge.set_bridge('torch')
-from decord import VideoReader
 
 
 from .distributed import (
@@ -88,7 +85,7 @@ class DynamicDegree:
         frames = (self.get_frames(video_path)
                   if video_path.endswith('.mp4')
                   else self.get_frames_from_img_folder(video_path))
-        # 2. 计算每对相邻帧的最大光流幅值（支持按 batch 处理）
+        # 2. 计算每对相邻帧的最大光流幅值（固定 batch）
         rad_list = []
         with torch.no_grad():
             total_pairs = len(frames) - 1
@@ -98,8 +95,8 @@ class DynamicDegree:
             iters = int(getattr(self.args, 'iters', 20))
             start_idx = 0
             while start_idx < total_pairs:
-                end_idx = min(total_pairs, start_idx + batch_size)
-                indices = list(range(start_idx, end_idx))
+                cur_bs = min(batch_size, total_pairs - start_idx)
+                indices = list(range(start_idx, start_idx + cur_bs))
                 # 使用第一对的尺寸构建一次 padder
                 ref_im1 = frames[indices[0]]
                 padder = InputPadder(ref_im1.shape)
@@ -116,7 +113,7 @@ class DynamicDegree:
                 # 累计每个样本的得分
                 for b in range(im1b.shape[0]):
                     rad_list.append(self.get_score(im1b[b:b+1], flow_up[b:b+1]))
-                start_idx = end_idx
+                start_idx += cur_bs
         # 3. 返回平均幅值
         return float(np.mean(rad_list))
 
@@ -176,62 +173,7 @@ class DynamicDegree:
         assert frame_list != []
         return frame_list
 
-    def _iter_pairs_decord_prefetch(self, video_path, batch_size=1, sample_fps_div=8, buffer_size=4):
-        """Decode frames with decord, sample by fps/div, build adjacent frame pairs in batches.
-        Producer thread decodes and pads on CPU, consumer moves to GPU and runs RAFT.
-        Yields tuples (im1b, im2b) on CPU (float tensors, NCHW) already padded.
-        """
-        vr = VideoReader(video_path, num_threads=max(4, os.cpu_count() // 2 or 1))
-        vlen = len(vr)
-        # derive sampling interval like OpenCV path
-        try:
-            fps = float(vr.get_avg_fps())
-        except Exception:
-            fps = 24.0
-        interval = max(1, round(fps / sample_fps_div))
-        # build sampled indices and pairs
-        frame_indices = list(range(0, vlen, interval))
-        if len(frame_indices) < 2:
-            return
-        pair_indices = [(frame_indices[i], frame_indices[i+1]) for i in range(len(frame_indices)-1)]
-
-        q: Queue = Queue(maxsize=buffer_size)
-
-        def producer():
-            try:
-                for start in range(0, len(pair_indices), batch_size):
-                    batch_pairs = pair_indices[start:start+batch_size]
-                    flat_idx = []
-                    for i, j in batch_pairs:
-                        flat_idx.append(i)
-                        flat_idx.append(j)
-                    # fetch frames in one call
-                    frames = vr.get_batch(flat_idx)  # (2B, H, W, C) uint8 CPU torch
-                    frames = frames.permute(0, 3, 1, 2).float()  # (2B, C, H, W)
-                    # build mapping
-                    im1_list = []
-                    im2_list = []
-                    # padder based on first frame shape
-                    padder = InputPadder(frames[0].shape)
-                    for bi in range(0, frames.shape[0], 2):
-                        im1, im2 = frames[bi], frames[bi+1]
-                        im1p, im2p = padder.pad(im1[None], im2[None])  # add batch dim for pad
-                        im1_list.append(im1p)
-                        im2_list.append(im2p)
-                    im1b = torch.cat(im1_list, dim=0)  # (B, C, H', W') CPU
-                    im2b = torch.cat(im2_list, dim=0)
-                    q.put((im1b, im2b))
-            finally:
-                q.put(None)
-
-        th = Thread(target=producer, daemon=True)
-        th.start()
-
-        while True:
-            item = q.get()
-            if item is None:
-                break
-            yield item
+    # decord pipeline removed per request
 
 
 
@@ -247,18 +189,7 @@ def dynamic_degree(dynamic, video_list):
     scores = []
     results = []
     for vp in tqdm(video_list, disable=get_rank()>0):
-        # Use decord pipeline with fixed batch size and async prefetch
-        batch_size = max(1, int(getattr(dynamic.args, 'batch_size', 1)))
-        iters = int(getattr(dynamic.args, 'iters', 20))
-        rad_list = []
-        with torch.no_grad():
-            for im1b_cpu, im2b_cpu in dynamic._iter_pairs_decord_prefetch(vp, batch_size=batch_size):
-                im1b = im1b_cpu.to(dynamic.device, non_blocking=True)
-                im2b = im2b_cpu.to(dynamic.device, non_blocking=True)
-                _, flow_up = dynamic.model(im1b, im2b, iters=iters, test_mode=True)
-                for b in range(im1b.shape[0]):
-                    rad_list.append(dynamic.get_score(im1b[b:b+1], flow_up[b:b+1]))
-        s = float(np.mean(rad_list)) if len(rad_list) > 0 else 0.0
+        s = dynamic.infer(vp)
         results.append({'video_path': vp, 'dynamic_score': s})
         scores.append(s)
     return float(np.mean(scores)) if len(scores) > 0 else 0.0, results
