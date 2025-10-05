@@ -177,6 +177,66 @@ class DynamicDegree:
         assert frame_list != []
         return frame_list
 
+    def _iter_pairs_decord_prefetch(self, video_path, batch_size=1, sample_fps_div=8, buffer_size=4):
+        """Decode frames with decord, sample by fps/div, and yield adjacent frame pairs in batches.
+        Producer decodes and pads on CPU, consumer transfers to GPU and runs RAFT.
+        Yields (im1b, im2b) CPU tensors in NCHW already padded.
+        """
+        # Ensure bridge returns torch when possible
+        try:
+            decord.bridge.set_bridge('torch')
+        except Exception:
+            pass
+        vr = VideoReader(video_path, ctx=cpu(0), num_threads=max(4, (os.cpu_count() or 8)//2))
+        vlen = len(vr)
+        try:
+            fps = float(vr.get_avg_fps())
+        except Exception:
+            fps = 24.0
+        interval = max(1, round(fps / sample_fps_div))
+        frame_indices = list(range(0, vlen, interval))
+        if len(frame_indices) < 2:
+            return
+        pair_indices = [(frame_indices[i], frame_indices[i+1]) for i in range(len(frame_indices)-1)]
+
+        q: Queue = Queue(maxsize=buffer_size)
+
+        def producer():
+            try:
+                for start in range(0, len(pair_indices), batch_size):
+                    batch_pairs = pair_indices[start:start+batch_size]
+                    flat_idx = []
+                    for i, j in batch_pairs:
+                        flat_idx.append(i)
+                        flat_idx.append(j)
+                    frames = vr.get_batch(flat_idx)  # (2B, H, W, C)
+                    if hasattr(frames, 'permute'):
+                        frames = frames.permute(0, 3, 1, 2).float()
+                    else:
+                        frames = torch.from_numpy(frames.asnumpy()).permute(0, 3, 1, 2).float()
+                    # Pad with a single padder based on first frame shape
+                    padder = InputPadder(frames[0].shape)
+                    im1_list, im2_list = [], []
+                    for bi in range(0, frames.shape[0], 2):
+                        im1, im2 = frames[bi], frames[bi+1]
+                        im1p, im2p = padder.pad(im1[None], im2[None])
+                        im1_list.append(im1p)
+                        im2_list.append(im2p)
+                    im1b = torch.cat(im1_list, dim=0)
+                    im2b = torch.cat(im2_list, dim=0)
+                    q.put((im1b, im2b))
+            finally:
+                q.put(None)
+
+        th = Thread(target=producer, daemon=True)
+        th.start()
+
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield item
+
     # decord pipeline removed per request
 
 
@@ -193,7 +253,18 @@ def dynamic_degree(dynamic, video_list):
     scores = []
     results = []
     for vp in tqdm(video_list, disable=get_rank()>0):
-        s = dynamic.infer(vp)
+        # Use decord async prefetch pipeline with fixed batch size
+        batch_size = max(1, int(getattr(dynamic.args, 'batch_size', 1)))
+        iters = int(getattr(dynamic.args, 'iters', 20))
+        rad_list = []
+        with torch.no_grad():
+            for im1b_cpu, im2b_cpu in dynamic._iter_pairs_decord_prefetch(vp, batch_size=batch_size):
+                im1b = im1b_cpu.to(dynamic.device, non_blocking=True)
+                im2b = im2b_cpu.to(dynamic.device, non_blocking=True)
+                _, flow_up = dynamic.model(im1b, im2b, iters=iters, test_mode=True)
+                for b in range(im1b.shape[0]):
+                    rad_list.append(dynamic.get_score(im1b[b:b+1], flow_up[b:b+1]))
+        s = float(np.mean(rad_list)) if len(rad_list) > 0 else 0.0
         results.append({'video_path': vp, 'dynamic_score': s})
         scores.append(s)
     return float(np.mean(scores)) if len(scores) > 0 else 0.0, results
