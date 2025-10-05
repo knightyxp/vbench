@@ -25,8 +25,20 @@ def parse_args():
     parser.add_argument(
         "--videos_path",
         type=str,
-        required=True,
+        required=False,
         help="folder that contains the sampled videos",
+    )
+    parser.add_argument(
+        "--video_json",
+        type=str,
+        required=False,
+        help="JSON file containing source video paths (list or objects with 'source'/'path'/'video_path')",
+    )
+    parser.add_argument(
+        "--video_base_dir",
+        type=str,
+        required=False,
+        help="Base directory to resolve relative paths in --video_json",
     )
     parser.add_argument(
         "--dimension",
@@ -136,14 +148,87 @@ def main():
 
     kwargs['imaging_quality_preprocessing_mode'] = args.imaging_quality_preprocessing_mode
 
+    # Validate inputs: require either videos_path or video_json
+    if (args.videos_path is None or args.videos_path == "") and (args.video_json is None or args.video_json == ""):
+        raise Exception("Either --videos_path or --video_json must be provided")
+
+    # If --video_json is provided, resolve paths and create a temp folder of symlinks
+    videos_path_for_eval = args.videos_path
+    mode_for_eval = args.mode
+    if args.video_json is not None and args.video_json != "":
+        json_dir = os.path.dirname(os.path.abspath(args.video_json))
+        base_dir = args.video_base_dir if args.video_base_dir else json_dir
+        with open(args.video_json, 'r') as f:
+            try:
+                video_spec = json.load(f)
+            except Exception as e:
+                raise Exception(f"Failed to load --video_json: {e}")
+
+        # Extract list of raw paths from JSON supporting common formats
+        raw_paths = []
+        if isinstance(video_spec, list):
+            for item in video_spec:
+                if isinstance(item, str):
+                    raw_paths.append(item)
+                elif isinstance(item, dict):
+                    for key in ['source_video_path', 'target_video_path', 'source', 'src', 'video', 'video_path', 'path']:
+                        if key in item and isinstance(item[key], str):
+                            raw_paths.append(item[key])
+                            break
+        elif isinstance(video_spec, dict):
+            # Dict mapping -> take values if they are strings or objects
+            for val in video_spec.values():
+                if isinstance(val, str):
+                    raw_paths.append(val)
+                elif isinstance(val, dict):
+                    for key in ['source_video_path', 'target_video_path', 'source', 'src', 'video', 'video_path', 'path']:
+                        if key in val and isinstance(val[key], str):
+                            raw_paths.append(val[key])
+                            break
+        else:
+            raise Exception("Unsupported --video_json format. Use list of strings or list/dict of objects with a path field.")
+
+        # Resolve to absolute local filesystem paths
+        abs_paths = []
+        for p in raw_paths:
+            if isinstance(p, str) and p.strip() != "":
+                if p.startswith('http://') or p.startswith('https://'):
+                    print0(f"Skip non-local URL path in --video_json: {p}")
+                    continue
+                candidate = p if os.path.isabs(p) else os.path.join(base_dir, p)
+                candidate = os.path.abspath(candidate)
+                if os.path.exists(candidate):
+                    abs_paths.append(candidate)
+                else:
+                    print0(f"WARNING: Video path not found, skipping: {candidate}")
+
+        if len(abs_paths) == 0:
+            raise Exception("No valid local video paths found from --video_json after resolution")
+
+        # Create a temp input dir within output_path and symlink all videos
+        temp_input_dir = os.path.join(args.output_path, f"json_inputs_{current_time}")
+        os.makedirs(temp_input_dir, exist_ok=True)
+        for idx, vp in enumerate(abs_paths):
+            link_name = f"{idx:05d}_" + os.path.basename(vp)
+            link_path = os.path.join(temp_input_dir, link_name)
+            try:
+                if os.path.lexists(link_path):
+                    os.unlink(link_path)
+                os.symlink(vp, link_path)
+            except Exception as e:
+                raise Exception(f"Failed to create symlink for {vp} -> {link_path}: {e}")
+
+        videos_path_for_eval = temp_input_dir
+        mode_for_eval = 'custom_input'
+
     my_VBench.evaluate(
-        videos_path = args.videos_path,
+        videos_path = videos_path_for_eval,
         name = f'results_{current_time}',
         prompt_list=prompt, # pass in [] to read prompt from filename
         dimension_list = args.dimension,
         local=args.load_ckpt_from_local,
         read_frame=args.read_frame,
-        mode=args.mode,
+        mode=mode_for_eval,
         **kwargs
     )
     print0('done')

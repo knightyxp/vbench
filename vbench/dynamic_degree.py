@@ -62,24 +62,38 @@ class DynamicDegree:
 
 
     def infer(self, video_path):
+        # with torch.no_grad():
+        #     if video_path.endswith('.mp4'):
+        #         frames = self.get_frames(video_path)
+        #     elif os.path.isdir(video_path):
+        #         frames = self.get_frames_from_img_folder(video_path)
+        #     else:
+        #         raise NotImplementedError
+        #     self.set_params(frame=frames[0], count=len(frames))
+        #     static_score = []
+        #     for image1, image2 in zip(frames[:-1], frames[1:]):
+        #         padder = InputPadder(image1.shape)
+        #         image1, image2 = padder.pad(image1, image2)
+        #         _, flow_up = self.model(image1, image2, iters=20, test_mode=True)
+        #         max_rad = self.get_score(image1, flow_up)
+        #         static_score.append(max_rad)
+        #     whether_move = self.check_move(static_score)
+        #     return whether_move
+        # 1. 读取并采样帧
+        frames = (self.get_frames(video_path)
+                  if video_path.endswith('.mp4')
+                  else self.get_frames_from_img_folder(video_path))
+        # 2. 计算每对相邻帧的最大光流幅值
+        rad_list = []
         with torch.no_grad():
-            if video_path.endswith('.mp4'):
-                frames = self.get_frames(video_path)
-            elif os.path.isdir(video_path):
-                frames = self.get_frames_from_img_folder(video_path)
-            else:
-                raise NotImplementedError
-            self.set_params(frame=frames[0], count=len(frames))
-            static_score = []
-            for image1, image2 in zip(frames[:-1], frames[1:]):
-                padder = InputPadder(image1.shape)
-                image1, image2 = padder.pad(image1, image2)
-                _, flow_up = self.model(image1, image2, iters=20, test_mode=True)
-                max_rad = self.get_score(image1, flow_up)
-                static_score.append(max_rad)
-            whether_move = self.check_move(static_score)
-            return whether_move
-
+            for im1, im2 in zip(frames[:-1], frames[1:]):
+                padder = InputPadder(im1.shape)
+                im1p, im2p = padder.pad(im1, im2)
+                _, flow_up = self.model(im1p, im2p, iters=20, test_mode=True)
+                # get_score 本身返回每对帧的最大径向幅值
+                rad_list.append(self.get_score(im1p, flow_up))
+        # 3. 返回平均幅值
+        return float(np.mean(rad_list))
 
     def check_move(self, score_list):
         thres = self.params["thres"]
@@ -139,26 +153,60 @@ class DynamicDegree:
 
 
 def dynamic_degree(dynamic, video_list):
-    sim = []
-    video_results = []
-    for video_path in tqdm(video_list, disable=get_rank() > 0):
-        score_per_video = dynamic.infer(video_path)
-        video_results.append({'video_path': video_path, 'video_results': score_per_video})
-        sim.append(score_per_video)
-    avg_score = np.mean(sim)
-    return avg_score, video_results
-
+    # sim = []
+    # video_results = []
+    # for video_path in tqdm(video_list, disable=get_rank() > 0):
+    #     score_per_video = dynamic.infer(video_path)
+    #     video_results.append({'video_path': video_path, 'video_results': score_per_video})
+    #     sim.append(score_per_video)
+    # avg_score = np.mean(sim)
+    # return avg_score, video_results
+    scores = []
+    results = []
+    for vp in tqdm(video_list, disable=get_rank()>0):
+        s = dynamic.infer(vp)
+        results.append({'video_path': vp, 'dynamic_score': s})
+        scores.append(s)
+    return float(np.mean(scores)), results
 
 
 def compute_dynamic_degree(json_dir, device, submodules_list, **kwargs):
-    model_path = submodules_list["model"] 
-    # set_args
-    args_new = edict({"model":model_path, "small":False, "mixed_precision":False, "alternate_corr":False})
+    # model_path = submodules_list["model"] 
+    # # set_args
+    # args_new = edict({"model":model_path, "small":False, "mixed_precision":False, "alternate_corr":False})
+    # dynamic = DynamicDegree(args_new, device)
+    # video_list, _ = load_dimension_info(json_dir, dimension='dynamic_degree', lang='en')
+    # video_list = distribute_list_to_rank(video_list)
+    # all_results, video_results = dynamic_degree(dynamic, video_list)
+    # if get_world_size() > 1:
+    #     video_results = gather_list_of_dict(video_results)
+    #     all_results = sum([d['video_results'] for d in video_results]) / len(video_results)
+    # return all_results, video_results
+
+    model_path = submodules_list['model']
+    args_new = edict({
+        'model': model_path,
+        'small': False,
+        'mixed_precision': False,
+        'alternate_corr': False,
+    })
     dynamic = DynamicDegree(args_new, device)
     video_list, _ = load_dimension_info(json_dir, dimension='dynamic_degree', lang='en')
     video_list = distribute_list_to_rank(video_list)
-    all_results, video_results = dynamic_degree(dynamic, video_list)
+
+    # 1) 本地计算
+    _, local_results = dynamic_degree(dynamic, video_list)
+    # 2) 多卡聚合
     if get_world_size() > 1:
-        video_results = gather_list_of_dict(video_results)
-        all_results = sum([d['video_results'] for d in video_results]) / len(video_results)
+        gathered = gather_list_of_dict(local_results)
+        if isinstance(gathered, list) and isinstance(gathered[0], list):
+            video_results = [item for sub in gathered for item in sub]
+        else:
+            video_results = gathered
+    else:
+        video_results = local_results
+
+    # 3) 计算全局平均分
+    all_scores = [d['dynamic_score'] for d in video_results]
+    all_results = float(np.mean(all_scores))
     return all_results, video_results
