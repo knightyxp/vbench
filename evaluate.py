@@ -171,7 +171,7 @@ def main():
                 if isinstance(item, str):
                     raw_paths.append(item)
                 elif isinstance(item, dict):
-                    for key in ['source_video_path', 'target_video_path', 'source', 'src', 'video', 'video_path', 'path']:
+                    for key in ['original_video', 'source_video_path', 'target_video_path', 'source', 'src', 'video', 'video_path', 'path']:
                         if key in item and isinstance(item[key], str):
                             raw_paths.append(item[key])
                             break
@@ -181,7 +181,7 @@ def main():
                 if isinstance(val, str):
                     raw_paths.append(val)
                 elif isinstance(val, dict):
-                    for key in ['source_video_path', 'target_video_path', 'source', 'src', 'video', 'video_path', 'path']:
+                    for key in ['original_video', 'source_video_path', 'target_video_path', 'source', 'src', 'video', 'video_path', 'path']:
                         if key in val and isinstance(val[key], str):
                             raw_paths.append(val[key])
                             break

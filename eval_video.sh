@@ -6,6 +6,6 @@
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 torchrun --nproc_per_node=4 --standalone evaluate.py \
-  --video_json /scratch3/yan204/yxp/Senorita/updated_data_obj_grounding_videos.json \
+  --video_json /scratch3/yan204/yxp/InContext-VideoEdit/data/json/obj_swap_top1w.json \
   --video_base_dir /scratch3/yan204/yxp/Senorita \
   --dimension 'dynamic_degree'
