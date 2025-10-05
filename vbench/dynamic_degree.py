@@ -135,14 +135,13 @@ class DynamicDegree:
 
     def get_frames(self, video_path):
         # Use decord for accelerated frame reading
-        # Prefer GPU decoding if available, else CPU
-        ctx = cpu(0)
+        # Prefer GPU decoding if available, else fallback to CPU gracefully
+        vr = None
         try:
             local_rank = int(os.environ.get('LOCAL_RANK', '0'))
-            ctx = gpu(local_rank)
+            vr = VideoReader(video_path, ctx=gpu(local_rank), num_threads=max(4, (os.cpu_count() or 8)//2))
         except Exception:
-            ctx = cpu(0)
-        vr = VideoReader(video_path, ctx=ctx, num_threads=max(4, (os.cpu_count() or 8)//2))
+            vr = VideoReader(video_path, ctx=cpu(0), num_threads=max(4, (os.cpu_count() or 8)//2))
         try:
             fps = float(vr.get_avg_fps())
         except Exception:
@@ -195,14 +194,13 @@ class DynamicDegree:
             decord.bridge.set_bridge('torch')
         except Exception:
             pass
-        # Prefer GPU decoding if available, else CPU
-        ctx = cpu(0)
+        # Prefer GPU decoding if available, else fallback to CPU gracefully
+        vr = None
         try:
             local_rank = int(os.environ.get('LOCAL_RANK', '0'))
-            ctx = gpu(local_rank)
+            vr = VideoReader(video_path, ctx=gpu(local_rank), num_threads=max(4, (os.cpu_count() or 8)//2))
         except Exception:
-            ctx = cpu(0)
-        vr = VideoReader(video_path, ctx=ctx, num_threads=max(4, (os.cpu_count() or 8)//2))
+            vr = VideoReader(video_path, ctx=cpu(0), num_threads=max(4, (os.cpu_count() or 8)//2))
         vlen = len(vr)
         try:
             fps = float(vr.get_avg_fps())
