@@ -12,7 +12,7 @@
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-torchrun --nproc_per_node=4 --standalone /projects/D2DCRC/xiangpeng/VBench/eval_dynamic_degree_json.py \
+torchrun --nproc_per_node=4 --standalone eval_dynamic_degree_json.py \
   --video_json /scratch3/yan204/yxp/InContext-VideoEdit/data/json/obj_swap_top1w.json \
   --video_base_dir /scratch3/yan204/yxp/Senorita \
   --output_path /scratch3/yan204/yxp/vbench/swap_1w_results
