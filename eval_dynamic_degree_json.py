@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime
 
 import torch
+from easydict import EasyDict as edict
 
 from vbench.distributed import dist_init, get_world_size, get_rank, barrier
 from vbench.utils import init_submodules, save_json
@@ -80,7 +81,7 @@ def main():
     # Prepare model
     submods = init_submodules(['dynamic_degree'], local=args.local, read_frame=False)
     model_path = submods['dynamic_degree']['model']
-    dd_args = type('cfg', (), {
+    dd_args = edict({
         'model': model_path,
         'small': False,
         'mixed_precision': False,
