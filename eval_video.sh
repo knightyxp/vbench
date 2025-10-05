@@ -10,9 +10,9 @@
 #   --dimension 'dynamic_degree'
 
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=1,2
 
-torchrun --nproc_per_node=4 --standalone eval_dynamic_degree_json.py \
+torchrun --nproc_per_node=2 --standalone eval_dynamic_degree_json.py \
   --batch_size 64 \
   --video_json updated_data_obj_grounding_videos.json \
   --video_base_dir /scratch3/yan204/yxp/Senorita \
