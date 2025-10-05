@@ -13,6 +13,9 @@ from vbench.utils import load_dimension_info
 
 from vbench.third_party.RAFT.core.raft import RAFT
 from vbench.third_party.RAFT.core.utils_core.utils import InputPadder
+import decord
+from decord import VideoReader, cpu, gpu
+decord.bridge.set_bridge('torch')
 
 
 from .distributed import (
@@ -130,23 +133,24 @@ class DynamicDegree:
 
 
     def get_frames(self, video_path):
-        # Deprecated: replaced by decord pipeline for performance
-        frame_list = []
-        video = cv2.VideoCapture(video_path)
-        fps = video.get(cv2.CAP_PROP_FPS) # get fps
+        # Use decord for accelerated frame reading
+        vr = VideoReader(video_path, ctx=cpu(0))
+        try:
+            fps = float(vr.get_avg_fps())
+        except Exception:
+            fps = 24.0
         interval = max(1, round(fps / 8))
-        while video.isOpened():
-            success, frame = video.read()
-            if success:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # convert to rgb
-                frame = torch.from_numpy(frame.astype(np.uint8)).permute(2, 0, 1).float()
-                frame = frame[None].to(self.device)
-                frame_list.append(frame)
-            else:
-                break
-        video.release()
-        assert frame_list != []
-        frame_list = self.extract_frame(frame_list, interval)
+        indices = list(range(0, len(vr), interval))
+        if len(indices) == 0:
+            return []
+        frames = vr.get_batch(indices)
+        # Normalize to torch tensor (supports either torch tensor or NDArray)
+        if hasattr(frames, 'permute'):
+            frames = frames.permute(0, 3, 1, 2).float()
+        else:
+            frames = torch.from_numpy(frames.asnumpy()).permute(0, 3, 1, 2).float()
+        # Convert to list of 1xC,H,W on device
+        frame_list = [frames[i].unsqueeze(0).to(self.device) for i in range(frames.shape[0])]
         return frame_list 
     
     
@@ -212,7 +216,7 @@ def compute_dynamic_degree(json_dir, device, submodules_list, **kwargs):
     args_new = edict({
         'model': model_path,
         'small': False,
-        'mixed_precision': False,
+        'mixed_precision': True,
         'alternate_corr': False,
     })
     dynamic = DynamicDegree(args_new, device)

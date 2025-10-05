@@ -90,7 +90,7 @@ def main():
     dd_args = edict({
         'model': model_path,
         'small': False,
-        'mixed_precision': False,
+        'mixed_precision': True,
         'alternate_corr': False,
         'batch_size': int(args.batch_size),
         'iters': int(args.iters),
