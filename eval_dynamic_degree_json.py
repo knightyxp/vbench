@@ -25,6 +25,12 @@ def parse_args():
     parser.add_argument(
         '--local', action='store_true',
         help='Use local checkpoints (download if missing)')
+    parser.add_argument(
+        '--batch_size', type=int, default=1,
+        help='Batch size for RAFT per-frame-pair inference (VRAM sensitive)')
+    parser.add_argument(
+        '--iters', type=int, default=20,
+        help='RAFT inference iterations per pair (smaller is faster)')
     return parser.parse_args()
 
 
@@ -86,6 +92,8 @@ def main():
         'small': False,
         'mixed_precision': False,
         'alternate_corr': False,
+        'batch_size': int(args.batch_size),
+        'iters': int(args.iters),
     })
     dynamic = DynamicDegree(dd_args, device)
 

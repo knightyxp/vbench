@@ -83,15 +83,35 @@ class DynamicDegree:
         frames = (self.get_frames(video_path)
                   if video_path.endswith('.mp4')
                   else self.get_frames_from_img_folder(video_path))
-        # 2. 计算每对相邻帧的最大光流幅值
+        # 2. 计算每对相邻帧的最大光流幅值（支持按 batch 处理）
         rad_list = []
         with torch.no_grad():
-            for im1, im2 in zip(frames[:-1], frames[1:]):
-                padder = InputPadder(im1.shape)
-                im1p, im2p = padder.pad(im1, im2)
-                _, flow_up = self.model(im1p, im2p, iters=20, test_mode=True)
-                # get_score 本身返回每对帧的最大径向幅值
-                rad_list.append(self.get_score(im1p, flow_up))
+            total_pairs = len(frames) - 1
+            if total_pairs <= 0:
+                return 0.0
+            batch_size = max(1, int(getattr(self.args, 'batch_size', 1)))
+            iters = int(getattr(self.args, 'iters', 20))
+            start_idx = 0
+            while start_idx < total_pairs:
+                end_idx = min(total_pairs, start_idx + batch_size)
+                indices = list(range(start_idx, end_idx))
+                # 使用第一对的尺寸构建一次 padder
+                ref_im1 = frames[indices[0]]
+                padder = InputPadder(ref_im1.shape)
+                im1_list = []
+                im2_list = []
+                for j in indices:
+                    im1, im2 = frames[j], frames[j+1]
+                    im1p, im2p = padder.pad(im1, im2)
+                    im1_list.append(im1p)
+                    im2_list.append(im2p)
+                im1b = torch.cat(im1_list, dim=0)
+                im2b = torch.cat(im2_list, dim=0)
+                _, flow_up = self.model(im1b, im2b, iters=iters, test_mode=True)
+                # 累计每个样本的得分
+                for b in range(im1b.shape[0]):
+                    rad_list.append(self.get_score(im1b[b:b+1], flow_up[b:b+1]))
+                start_idx = end_idx
         # 3. 返回平均幅值
         return float(np.mean(rad_list))
 
