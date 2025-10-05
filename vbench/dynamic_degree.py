@@ -8,6 +8,7 @@ from tqdm import tqdm
 from easydict import EasyDict as edict
 from queue import Queue
 from threading import Thread
+torch.backends.cudnn.benchmark = True
 
 from vbench.utils import load_dimension_info
 
@@ -134,7 +135,14 @@ class DynamicDegree:
 
     def get_frames(self, video_path):
         # Use decord for accelerated frame reading
-        vr = VideoReader(video_path, ctx=cpu(0))
+        # Prefer GPU decoding if available, else CPU
+        ctx = cpu(0)
+        try:
+            local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+            ctx = gpu(local_rank)
+        except Exception:
+            ctx = cpu(0)
+        vr = VideoReader(video_path, ctx=ctx, num_threads=max(4, (os.cpu_count() or 8)//2))
         try:
             fps = float(vr.get_avg_fps())
         except Exception:
@@ -187,7 +195,14 @@ class DynamicDegree:
             decord.bridge.set_bridge('torch')
         except Exception:
             pass
-        vr = VideoReader(video_path, ctx=cpu(0), num_threads=max(4, (os.cpu_count() or 8)//2))
+        # Prefer GPU decoding if available, else CPU
+        ctx = cpu(0)
+        try:
+            local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+            ctx = gpu(local_rank)
+        except Exception:
+            ctx = cpu(0)
+        vr = VideoReader(video_path, ctx=ctx, num_threads=max(4, (os.cpu_count() or 8)//2))
         vlen = len(vr)
         try:
             fps = float(vr.get_avg_fps())
