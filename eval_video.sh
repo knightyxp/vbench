@@ -16,6 +16,6 @@ torchrun --nproc_per_node=4 --standalone eval_dynamic_degree_json.py \
   --video_json /scratch3/yan204/yxp/Filter_Video_In_context_data/dover_prediction/dover_score_top10w_pairs_grounding_fixed.json \
   --video_base_dir /scratch3/yan204/yxp/Senorita \
   --output_path /scratch3/yan204/yxp/vbench/grounding_10w_results\
-  --batch_size 8 \
+  --batch_size 16 \
   --run_id grounding_10w \
   --save_every 100
