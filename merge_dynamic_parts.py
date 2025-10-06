@@ -12,6 +12,7 @@ def parse_args():
     parser.add_argument('--input_dir', type=str, required=True, help='Directory containing part files')
     parser.add_argument('--output_dir', type=str, default=None, help='Directory to write merged JSON (default=input_dir)')
     parser.add_argument('--run_id', type=str, default='', help='Run ID to select files (e.g., grounding_10w). If empty, auto-detect latest group')
+    parser.add_argument('--ranks', type=str, default='0,1,2,3', help='Comma-separated rank ids to merge (used when run_id not provided)')
     parser.add_argument('--outfile', type=str, default='', help='Output filename (optional). Defaults to dynamic_degree_eval_{run_id or timestamp}.json')
     return parser.parse_args()
 
@@ -29,6 +30,21 @@ def detect_groups(input_dir: str):
         gid = m.group(1)
         groups.setdefault(gid, []).append(p)
     return groups
+
+
+def pick_latest_per_rank(input_dir: str, ranks: list[int]):
+    selected = []
+    for r in ranks:
+        candidates = []
+        pattern_jsonl = os.path.join(input_dir, f'dynamic_degree_parts_*_rank{r}.jsonl')
+        pattern_json = os.path.join(input_dir, f'dynamic_degree_parts_*_rank{r}.json')
+        candidates.extend(glob.glob(pattern_jsonl))
+        candidates.extend(glob.glob(pattern_json))
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda p: os.path.getmtime(p))
+        selected.append(best)
+    return sorted(selected)
 
 
 def pick_group(groups: dict[str, list[str]]):
@@ -91,15 +107,15 @@ def main():
         if not files:
             files = sorted(glob.glob(os.path.join(input_dir, f'dynamic_degree_parts_{group_id}_rank*.json')))
     else:
-        groups = detect_groups(input_dir)
-        gid, paths = pick_group(groups)
-        if not gid:
-            raise SystemExit(f"No part files found in {input_dir}")
-        group_id = gid
-        files = sorted(paths)
+        # Merge by latest file per specified rank, ignoring timestamp in filename
+        try:
+            ranks = [int(x) for x in args.ranks.split(',') if x.strip()!='']
+        except Exception:
+            ranks = [0,1,2,3]
+        files = pick_latest_per_rank(input_dir, ranks)
 
     if not files:
-        raise SystemExit(f"No part files found for run_id='{group_id}' in {input_dir}")
+        raise SystemExit(f"No part files found in {input_dir} (run_id='{group_id}' ranks='{getattr(args,'ranks','')}' )")
 
     print(f"Merging {len(files)} part files for group '{group_id}':")
     for p in files:
@@ -125,15 +141,13 @@ def main():
     total = len(merged)
     avg = float(sum(r['dynamic_score'] for r in merged) / total) if total > 0 else 0.0
 
-    ts = datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-    out_name = args.outfile.strip() if args.outfile else f'dynamic_degree_eval_{group_id or ts}.json'
+    out_name = args.outfile.strip() if args.outfile else 'dynamic_degree_eval_merged.json'
     out_path = os.path.join(output_dir, out_name)
     out_obj = {
         'dimension': 'dynamic_degree',
         'average_score': avg,
         'results': merged,
         'total_videos': total,
-        'timestamp': ts,
         'run_id': group_id,
         'source_parts_dir': input_dir,
     }
