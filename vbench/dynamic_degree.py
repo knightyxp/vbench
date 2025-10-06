@@ -4,6 +4,7 @@ import cv2
 import glob
 import numpy as np
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 from easydict import EasyDict as edict
 from queue import Queue
@@ -65,6 +66,37 @@ class DynamicDegree:
     def set_params(self, frame, count):
         scale = min(list(frame.shape)[-2:])
         self.params = {"thres":6.0*(scale/256.0), "count_num":round(4*(count/16.0))}
+
+
+    # ---------------------
+    # Resize helpers
+    # ---------------------
+    def _get_target_hw(self, h, w):
+        # Landscape -> 480x832; Portrait -> 832x480
+        if w >= h:
+            return 480, 832
+        else:
+            return 832, 480
+
+    def _resize_batch_nchw(self, frames_nchw):
+        """Resize a NCHW batch on CPU to the target size based on orientation.
+        frames_nchw: Tensor [N, C, H, W] (float)
+        """
+        if frames_nchw is None or frames_nchw.numel() == 0:
+            return frames_nchw
+        h, w = int(frames_nchw.shape[-2]), int(frames_nchw.shape[-1])
+        th, tw = self._get_target_hw(h, w)
+        if h == th and w == tw:
+            return frames_nchw
+        return F.interpolate(frames_nchw, size=(th, tw), mode='bilinear', align_corners=False)
+
+    def _resize_single_chw(self, frame_chw):
+        """Resize a single CHW tensor to target size keeping type/scale."""
+        h, w = int(frame_chw.shape[-2]), int(frame_chw.shape[-1])
+        th, tw = self._get_target_hw(h, w)
+        if h == th and w == tw:
+            return frame_chw
+        return F.interpolate(frame_chw[None], size=(th, tw), mode='bilinear', align_corners=False)[0]
 
 
     def infer(self, video_path):
@@ -156,6 +188,8 @@ class DynamicDegree:
             frames = frames.permute(0, 3, 1, 2).float()
         else:
             frames = torch.from_numpy(frames.asnumpy()).permute(0, 3, 1, 2).float()
+        # Resize whole batch based on orientation of original frames
+        frames = self._resize_batch_nchw(frames)
         # Convert to list of 1xC,H,W on device
         frame_list = [frames[i].unsqueeze(0).to(self.device) for i in range(frames.shape[0])]
         return frame_list 
@@ -179,6 +213,7 @@ class DynamicDegree:
             frame = cv2.imread(img, cv2.IMREAD_COLOR)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame = torch.from_numpy(frame.astype(np.uint8)).permute(2, 0, 1).float()
+            frame = self._resize_single_chw(frame)
             frame = frame[None].to(self.device)
             frame_list.append(frame)
         assert frame_list != []
@@ -227,6 +262,8 @@ class DynamicDegree:
                         frames = frames.permute(0, 3, 1, 2).float()
                     else:
                         frames = torch.from_numpy(frames.asnumpy()).permute(0, 3, 1, 2).float()
+                    # Resize batch to target orientation-based size
+                    frames = self._resize_batch_nchw(frames)
                     # Pad with a single padder based on first frame shape
                     padder = InputPadder(frames[0].shape)
                     im1_list, im2_list = [], []
