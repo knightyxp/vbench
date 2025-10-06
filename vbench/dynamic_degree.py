@@ -72,11 +72,11 @@ class DynamicDegree:
     # Resize helpers
     # ---------------------
     def _get_target_hw(self, h, w):
-        # Landscape -> 480x832; Portrait -> 832x480
+        # Landscape -> 336x592; Portrait -> 592x336
         if w >= h:
-            return 480, 832
+            return 336, 592
         else:
-            return 832, 480
+            return 592, 336
 
     def _resize_batch_nchw(self, frames_nchw):
         """Resize a NCHW batch on CPU to the target size based on orientation.
