@@ -219,7 +219,7 @@ class DynamicDegree:
         assert frame_list != []
         return frame_list
 
-    def _iter_pairs_decord_prefetch(self, video_path, batch_size=1, sample_fps_div=8, buffer_size=4):
+    def _iter_pairs_decord_prefetch(self, video_path, batch_size=1, buffer_size=4):
         """Decode frames with decord, sample by fps/div, and yield adjacent frame pairs in batches.
         Producer decodes and pads on CPU, consumer transfers to GPU and runs RAFT.
         Yields (im1b, im2b) CPU tensors in NCHW already padded.
@@ -241,7 +241,7 @@ class DynamicDegree:
             fps = float(vr.get_avg_fps())
         except Exception:
             fps = 24.0
-        interval = max(1, round(fps / sample_fps_div))
+        interval = max(1, round(fps / 8))
         frame_indices = list(range(0, vlen, interval))
         if len(frame_indices) < 2:
             return
@@ -302,7 +302,40 @@ def dynamic_degree(dynamic, video_list):
     # return avg_score, video_results
     scores = []
     results = []
+    # incremental checkpointing
+    output_path = getattr(dynamic.args, 'output_path', None)
+    run_id = getattr(dynamic.args, 'run_id', None)
+    resume = bool(getattr(dynamic.args, 'resume', False))
+    save_every = max(1, int(getattr(dynamic.args, 'save_every', 1)))
+    rank = get_rank()
+    jsonl_path = None
+    processed = set()
+    if output_path and run_id:
+        os.makedirs(output_path, exist_ok=True)
+        jsonl_path = os.path.join(output_path, f'dynamic_degree_parts_{run_id}_rank{rank}.jsonl')
+        if resume and os.path.exists(jsonl_path):
+            try:
+                with open(jsonl_path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        import json as _json
+                        try:
+                            rec = _json.loads(line)
+                            if isinstance(rec, dict) and 'video_path' in rec:
+                                processed.add(rec['video_path'])
+                                results.append(rec)
+                                scores.append(float(rec.get('dynamic_score', 0.0)))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    since_flush = 0
     for vp in tqdm(video_list, disable=get_rank()>0):
+        if vp in processed:
+            continue
         # Use decord async prefetch pipeline with fixed batch size
         batch_size = max(1, int(getattr(dynamic.args, 'batch_size', 1)))
         iters = int(getattr(dynamic.args, 'iters', 20))
@@ -315,8 +348,24 @@ def dynamic_degree(dynamic, video_list):
                 for b in range(im1b.shape[0]):
                     rad_list.append(dynamic.get_score(im1b[b:b+1], flow_up[b:b+1]))
         s = float(np.mean(rad_list)) if len(rad_list) > 0 else 0.0
-        results.append({'video_path': vp, 'dynamic_score': s})
+        rec = {'video_path': vp, 'dynamic_score': s}
+        results.append(rec)
         scores.append(s)
+        if jsonl_path:
+            try:
+                with open(jsonl_path, 'a') as f:
+                    import json as _json
+                    f.write(_json.dumps(rec) + "\n")
+            except Exception:
+                pass
+            since_flush += 1
+            if since_flush >= save_every:
+                try:
+                    with open(jsonl_path, 'a') as f:
+                        os.fsync(f.fileno())
+                except Exception:
+                    pass
+                since_flush = 0
     return float(np.mean(scores)) if len(scores) > 0 else 0.0, results
 
 

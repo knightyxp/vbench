@@ -31,6 +31,15 @@ def parse_args():
     parser.add_argument(
         '--iters', type=int, default=20,
         help='RAFT inference iterations per pair (smaller is faster)')
+    parser.add_argument(
+        '--run_id', type=str, default='',
+        help='Stable run identifier for checkpoint/resume; default uses timestamp')
+    parser.add_argument(
+        '--resume', action='store_true',
+        help='Resume from existing per-rank JSONL checkpoints (requires same run_id/world size)')
+    parser.add_argument(
+        '--save_every', type=int, default=1,
+        help='Flush checkpoint every N videos (default 1)')
     return parser.parse_args()
 
 
@@ -103,27 +112,37 @@ def main():
     rank = get_rank()
     shard = all_paths[rank::world]
 
-    # Compute local results
-    _, local_results = dynamic_degree(dynamic, shard)
-
-    # Simple gather via file writes per rank; coordinator will merge
+    # Compute local results with incremental checkpointing inside dynamic_degree()
+    # Pass checkpoint args via dynamic.args
     os.makedirs(args.output_path, exist_ok=True)
     ts = datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-    part_path = os.path.join(args.output_path, f'dynamic_degree_parts_{ts}_rank{rank}.json')
-    save_json(local_results, part_path)
+    run_id = args.run_id if isinstance(args.run_id, str) and args.run_id != '' else ts
+    dynamic.args.output_path = args.output_path
+    dynamic.args.run_id = run_id
+    dynamic.args.resume = bool(args.resume)
+    dynamic.args.save_every = max(1, int(args.save_every))
+
+    # Compute and incrementally save per video to {output_path}/dynamic_degree_parts_{run_id}_rank{rank}.jsonl
+    _, _local_results = dynamic_degree(dynamic, shard)
 
     # Synchronize before merge to ensure all part files are written
     barrier()
     # Coordinator merges
     if rank == 0:
-        # Wait for others via simple barrier in distributed module handled by torchrun termination
-        # Merge parts present
+        # Merge JSONL checkpoints present
         merged = []
         for r in range(world):
-            rp = os.path.join(args.output_path, f'dynamic_degree_parts_{ts}_rank{r}.json')
+            rp = os.path.join(args.output_path, f'dynamic_degree_parts_{run_id}_rank{r}.jsonl')
             if os.path.exists(rp):
                 with open(rp, 'r') as f:
-                    merged.extend(json.load(f))
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            merged.append(json.loads(line))
+                        except Exception:
+                            pass
         avg = float(sum(d['dynamic_score'] for d in merged) / len(merged))
         out = {
             'dimension': 'dynamic_degree',
@@ -131,9 +150,10 @@ def main():
             'results': merged,
             'total_videos': len(merged),
             'timestamp': ts,
+            'run_id': run_id,
             'source_json': os.path.abspath(args.video_json),
         }
-        save_json(out, os.path.join(args.output_path, f'dynamic_degree_eval_{ts}.json'))
+        save_json(out, os.path.join(args.output_path, f'dynamic_degree_eval_{run_id}.json'))
 
 
 if __name__ == '__main__':

@@ -10,10 +10,12 @@
 #   --dimension 'dynamic_degree'
 
 
-export CUDA_VISIBLE_DEVICES=1,2
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-torchrun --nproc_per_node=2 --standalone eval_dynamic_degree_json.py \
-  --batch_size 8 \
-  --video_json updated_data_obj_grounding_videos.json \
+torchrun --nproc_per_node=4 --standalone eval_dynamic_degree_json.py \
+  --video_json /scratch3/yan204/yxp/Filter_Video_In_context_data/dover_prediction/dover_score_top10w_pairs_grounding_fixed.json \
   --video_base_dir /scratch3/yan204/yxp/Senorita \
-  --output_path /scratch3/yan204/yxp/vbench/swap_1w_results
+  --output_path /scratch3/yan204/yxp/vbench/grounding_10w_results\
+  --batch_size 8 \
+  --run_id grounding_10w \
+  --save_every 100
